@@ -183,13 +183,20 @@ class EncDecTransformer(nn.Module):
         class_tokens = self.transformer_decoder(tgt=class_tokens, memory=tile_tokens)
 
         # Apply the corresponding head to each class token
+
+        #TODO:
+        # logits = {
+        #     target_label: self.heads[sanitize(target_label)](class_token)
+        #     for target_label, class_token in zip(
+        #         self.target_labels,
+        #         class_tokens.permute(1, 0, 2),  # Permute to [target, batch, d_model]
+        #         strict=True,
+        #     )
+        # }
+
         logits = {
-            target_label: self.heads[sanitize(target_label)](class_token)
-            for target_label, class_token in zip(
-                self.target_labels,
-                class_tokens.permute(1, 0, 2),  # Permute to [target, batch, d_model]
-                strict=True,
-            )
+            target_label: self.heads[sanitize(target_label)](class_tokens[:, idx]).squeeze(dim=1)
+            for idx, target_label in enumerate(self.target_labels)
         }
 
         return logits
@@ -201,7 +208,7 @@ class LitMilClassificationMixin(pl.LightningModule):
     def __init__(
         self,
         *,
-        weights: Dict[str, torch.Tensor],
+        target_labels: list,
         # Other hparams
         learning_rate: float = 1e-4,
         **hparams: Any,
@@ -210,37 +217,58 @@ class LitMilClassificationMixin(pl.LightningModule):
         _ = hparams  # So we don't get unused parameter warnings
 
         self.learning_rate = learning_rate
-
-        target_aurocs = torchmetrics.MetricCollection(
+        
+        #TODO: MSE instead of AUROC
+        target_mse = torchmetrics.MetricCollection(
             {
-                sanitize(target_label): SafeMulticlassAUROC(num_classes=len(weight))
-                for target_label, weight in weights.items()
+                sanitize(target_label): torchmetrics.MeanSquaredError() #TODO: swap with Safe variant?
+                for target_label in target_labels
             }
         )
         for step_name in ["train", "val", "test"]:
             setattr(
                 self,
-                f"{step_name}_target_aurocs",
-                target_aurocs.clone(prefix=f"{step_name}_"),
+                f"{step_name}_target_MSE",
+                target_mse.clone(prefix=f"{step_name}_"),
             )
 
-        self.weights = weights
+        # self.weights = weights
+        self.target_labels = target_labels
 
         self.save_hyperparameters()
 
     def step(self, batch: Tuple[Tensor, Tensor], step_name=None):
         feats, coords, targets = batch
         logits = self(feats, coords)
-
         # Calculate the cross entropy loss for each target, then sum them
-        loss = sum(
-            F.cross_entropy(
-                (l := logits[target_label]),
-                targets[target_label].type_as(l),
-                weight=weight.type_as(l),
+        
+        # #TODO: MSE instead of CE
+        # loss = sum(
+        #     F.cross_entropy(
+        #         (l := logits[target_label]),
+        #         targets[target_label].type_as(l),
+        #         weight=weight.type_as(l),
+        #     )
+        #     for target_label, weight in self.weights.items()
+        # )
+        # loss = sum(
+        #     F.mse_loss(
+        #         (l := logits[target_label]),
+        #         targets[target_label].type_as(l),
+        #         reduction='mean',  # You can change this to 'sum' if needed
+        #     )
+        #     for target_label in self.target_labels
+        # )
+        total_loss=0.0
+        for target_label in self.target_labels:
+            nan_idx = torch.isnan(targets[target_label])
+            loss = F.mse_loss(
+                (l := logits[target_label][~nan_idx]),
+                targets[target_label][~nan_idx].type_as(l),
+                reduction='mean'  # You can change this to 'sum' if needed
             )
-            for target_label, weight in self.weights.items()
-        )
+            total_loss += loss
+
 
         if step_name:
             self.log(
@@ -252,19 +280,20 @@ class LitMilClassificationMixin(pl.LightningModule):
                 sync_dist=True,
             )
 
+            #TODO: MSE instead of AUROC
             # Update target-wise metrics
-            for target_label in self.weights:
-                target_auroc = getattr(self, f"{step_name}_target_aurocs")[
+            for target_label in self.target_labels:
+                target_mse = getattr(self, f"{step_name}_target_MSE")[
                     sanitize(target_label)
                 ]
-                is_na = (targets[target_label] == 0).all(dim=1)
-                target_auroc.update(
+                is_na = torch.isnan((targets[target_label]))
+                target_mse.update(
                     logits[target_label][~is_na],
-                    targets[target_label][~is_na].argmax(dim=1),
+                    targets[target_label][~is_na],
                 )
                 self.log(
-                    f"{step_name}_{target_label}_auroc",
-                    target_auroc,
+                    f"{step_name}_{target_label}_MSE",
+                    target_mse,
                     on_step=False,
                     on_epoch=True,
                     sync_dist=True,
@@ -287,9 +316,8 @@ class LitMilClassificationMixin(pl.LightningModule):
         else:
             feats, positions, _ = batch
         logits = self(feats, positions)
-
         softmaxed = {
-            target_label: torch.softmax(x, 1) for target_label, x in logits.items()
+            target_label: x for target_label, x in logits.items() #TODO: add softmax of x?
         }
         return softmaxed
 
@@ -301,18 +329,33 @@ class LitMilClassificationMixin(pl.LightningModule):
 def sanitize(x: str) -> str:
     return re.sub(r"[^A-Za-z0-9_]", "_", x)
 
+#TODO:
+# class SafeMulticlassAUROC(torchmetrics.classification.MulticlassAUROC):
+#     """A Multiclass AUROC that doesn't blow up when no targets are given"""
 
-class SafeMulticlassAUROC(torchmetrics.classification.MulticlassAUROC):
-    """A Multiclass AUROC that doesn't blow up when no targets are given"""
+#     def compute(self) -> torch.Tensor:
+#         # Add faux entry if there are none so far
+#         if len(self.preds) == 0:
+#             self.update(torch.zeros(1, self.num_classes), torch.zeros(1).long())
+#         elif len(dim_zero_cat(self.preds)) == 0:
+#             self.update(
+#                 torch.zeros(1, self.num_classes).type_as(self.preds[0]),
+#                 torch.zeros(1).long().type_as(self.target[0]),
+#             )
+#         return super().compute()
+
+
+class SafeMSEMetric(torchmetrics.MeanSquaredError):
+    """A Mean Squared Error metric that doesn't blow up when no targets are given"""
 
     def compute(self) -> torch.Tensor:
-        # Add faux entry if there are none so far
+        breakpoint()
         if len(self.preds) == 0:
-            self.update(torch.zeros(1, self.num_classes), torch.zeros(1).long())
-        elif len(dim_zero_cat(self.preds)) == 0:
+            self.update(torch.zeros(1), torch.zeros(1))
+        elif len(self.preds) > 0 and len(self.target) == 0:
             self.update(
-                torch.zeros(1, self.num_classes).type_as(self.preds[0]),
-                torch.zeros(1).long().type_as(self.target[0]),
+                torch.zeros(1).type_as(self.preds[0]),
+                torch.zeros(1).type_as(self.preds[0]),
             )
         return super().compute()
 
@@ -322,7 +365,7 @@ class LitEncDecTransformer(LitMilClassificationMixin):
         self,
         *,
         d_features: int,
-        weights: Mapping[str, torch.Tensor],
+        target_labels: list,
         # Model parameters
         d_model: int = 512,
         num_encoder_heads: int = 8,
@@ -336,14 +379,14 @@ class LitEncDecTransformer(LitMilClassificationMixin):
         **hparams: Any,
     ) -> None:
         super().__init__(
-            weights=weights,
+            target_labels=target_labels, #TODO change to target labels
             learning_rate=learning_rate,
         )
         _ = hparams  # so we don't get unused parameter warnings
 
         self.model = EncDecTransformer(
             d_features=d_features,
-            target_n_outs={t: len(w) for t, w in weights.items()},
+            target_n_outs={t: 1 for t in target_labels}, #TODO change to target labels
             d_model=d_model,
             num_encoder_heads=num_encoder_heads,
             num_decoder_heads=num_decoder_heads,

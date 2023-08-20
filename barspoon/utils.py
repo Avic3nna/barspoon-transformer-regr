@@ -5,6 +5,7 @@ from typing import Dict, Iterable, Literal, Mapping, Optional, Sequence, Union
 import numpy as np
 import pandas as pd
 import torch
+import glob
 
 __all__ = [
     "make_dataset_df",
@@ -20,8 +21,8 @@ def make_dataset_df(
     clini_tables: Iterable[Path] = [],
     slide_tables: Iterable[Path] = [],
     feature_dirs: Iterable[Path],
-    patient_col: str = "patient",
-    filename_col: str = "filename",
+    patient_col: str = "PATIENT",
+    filename_col: str = "FILENAME",
     group_by: Optional[str] = None,
     target_labels: Sequence[str],
 ) -> pd.DataFrame:
@@ -39,10 +40,9 @@ def make_dataset_df(
             )
             slide_df["path"] = slide_df[filename_col].map(
                 lambda fn: next(
-                    (path for f in feature_dirs if (path := f / fn).exists()), None
+                    (path for f in feature_dirs if (path := Path(f"{f / fn}.h5")).exists()), None
                 )
             )
-
             if (na_idxs := slide_df.path.isna()).any():
                 note_problem(
                     f"some slides from {slide_table} have no features: {list(slide_df.loc[na_idxs, filename_col])}",
@@ -117,22 +117,20 @@ def make_preds_df(
     predictions: Mapping[str, torch.Tensor],
     *,
     base_df: pd.DataFrame,
-    categories: Mapping[str, Sequence[str]],
+    target_labels: list,
 ) -> pd.DataFrame:
     target_pred_dfs = []
-    for target_label, cat_labels in categories.items():
+    for target_label in target_labels:
         target_pred_df = pd.DataFrame(
             predictions[target_label],
-            columns=[f"{target_label}_{cat}" for cat in cat_labels],
+            columns=[f"{target_label}_pred"],
             index=base_df.index,
         )
-        hard_prediction = np.array(cat_labels)[predictions[target_label].argmax(dim=1)]
-        target_pred_df[f"{target_label}_pred"] = hard_prediction
 
         target_pred_dfs.append(target_pred_df)
 
     preds_df = pd.concat(
-        [base_df.loc[:, base_df.columns.isin(categories.keys())], *target_pred_dfs],
+        [base_df.loc[:, base_df.columns.isin(target_labels)], *target_pred_dfs],
         axis=1,
     ).copy()
     return preds_df

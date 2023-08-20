@@ -11,6 +11,8 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
+import itertools
+import sklearn
 
 from barspoon.data import BagDataset
 from barspoon.model import LitEncDecTransformer
@@ -22,12 +24,15 @@ def main():
     parser = make_argument_parser()
     args = parser.parse_args()
 
-    pl.seed_everything(args.seed)
+    pl.seed_everything(1337)
     torch.set_float32_matmul_precision("medium")
 
-    with open(args.target_file, "rb") as target_toml_file:
-        target_info = tomli.load(target_toml_file)
-    target_labels = list(target_info["targets"].keys())
+    #TODO:
+    target_labels = list(itertools.chain(*args.regr_target))
+
+    # with open(args.target_file, "rb") as target_toml_file:
+    #     target_info = tomli.load(target_toml_file)
+    # target_labels = list(target_info["targets"].keys())
 
     if args.valid_clini_tables or args.valid_slide_tables or args.valid_feature_dirs:
         # read validation set from separate clini / slide table / feature dir
@@ -35,8 +40,8 @@ def main():
             clini_tables=args.clini_tables,
             slide_tables=args.slide_tables,
             feature_dirs=args.feature_dirs,
-            patient_col=args.patient_col,
-            filename_col=args.filename_col,
+            # patient_col=args.patient_col,
+            # filename_col=args.filename_col,
             group_by=args.group_by,
             target_labels=target_labels,
         )
@@ -44,8 +49,8 @@ def main():
             clini_tables=args.valid_clini_tables or args.clini_tables,
             slide_tables=args.valid_slide_tables or args.slide_tables,
             feature_dirs=args.valid_feature_dirs or args.feature_dirs,
-            patient_col=args.patient_col,
-            filename_col=args.filename_col,
+            # patient_col=args.patient_col,
+            # filename_col=args.filename_col,
             group_by=args.group_by,
             target_labels=target_labels,
         )
@@ -55,31 +60,46 @@ def main():
             clini_tables=args.clini_tables,
             slide_tables=args.slide_tables,
             feature_dirs=args.feature_dirs,
-            patient_col=args.patient_col,
-            filename_col=args.filename_col,
+            # patient_col=args.patient_col,
+            # filename_col=args.filename_col,
             group_by=args.group_by,
             target_labels=target_labels,
         )
+        dataset_df[target_labels] = dataset_df[target_labels].astype(float)
         train_items, valid_items = train_test_split(dataset_df.index, test_size=0.2)
         train_df, valid_df = dataset_df.loc[train_items], dataset_df.loc[valid_items]
+        min_max_scaler = sklearn.preprocessing.MinMaxScaler()
+        train_df[target_labels] = min_max_scaler.fit_transform(train_df[target_labels])
+        valid_df[target_labels] = min_max_scaler.transform(valid_df[target_labels])
 
-    train_encoded_targets = encode_targets(
-        train_df, target_labels=target_labels, **target_info
-    )
+    # train_encoded_targets = encode_targets(
+    #     train_df, target_labels=target_labels, **target_info
+    # )
 
-    valid_encoded_targets = encode_targets(
-        valid_df, target_labels=target_labels, **target_info
-    )
+    # valid_encoded_targets = encode_targets(
+    #     valid_df, target_labels=target_labels, **target_info
+    # )
 
     assert not (
         overlap := set(train_df.index) & set(valid_df.index)
     ), f"unexpected overlap between training and testing set: {overlap}"
 
+    # train_dl, valid_dl = make_dataloaders(
+    #     train_bags=train_df.path.values,
+    #     train_targets={k: v.encoded for k, v in train_encoded_targets.items()},
+    #     valid_bags=valid_df.path.values,
+    #     valid_targets={k: v.encoded for k, v in valid_encoded_targets.items()},
+    #     instances_per_bag=args.instances_per_bag,
+    #     batch_size=args.batch_size,
+    #     num_workers=args.num_workers,
+    # )
+
+    #TODO:
     train_dl, valid_dl = make_dataloaders(
         train_bags=train_df.path.values,
-        train_targets={k: v.encoded for k, v in train_encoded_targets.items()},
+        train_targets={k: v for k, v in train_df.loc[:,target_labels].items()},
         valid_bags=valid_df.path.values,
-        valid_targets={k: v.encoded for k, v in valid_encoded_targets.items()},
+        valid_targets={k: v for k, v in valid_df.loc[:,target_labels].items()},
         instances_per_bag=args.instances_per_bag,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
@@ -88,14 +108,27 @@ def main():
     example_bags, _, _ = next(iter(train_dl))
     d_features = example_bags.size(-1)
 
+    # model = LitEncDecTransformer(
+    #     d_features=d_features,
+    #     target_labels=target_labels,
+    #     weights={k: v.weight for k, v in train_encoded_targets.items()},
+    #     # Other hparams
+    #     version="barspoon-transformer 3.1",
+    #     categories={k: v.categories for k, v in train_encoded_targets.items()},
+    #     target_file=target_info,
+    #     **{
+    #         f"train_{train_df.index.name}": list(train_df.index),
+    #         f"valid_{valid_df.index.name}": list(valid_df.index),
+    #     },
+    #     **{k: v for k, v in vars(args).items() if k not in {"target_file"}},
+    # )
+
+    #TODO:
     model = LitEncDecTransformer(
         d_features=d_features,
         target_labels=target_labels,
-        weights={k: v.weight for k, v in train_encoded_targets.items()},
         # Other hparams
         version="barspoon-transformer 3.1",
-        categories={k: v.categories for k, v in train_encoded_targets.items()},
-        target_file=target_info,
         **{
             f"train_{train_df.index.name}": list(train_df.index),
             f"valid_{valid_df.index.name}": list(valid_df.index),
@@ -135,8 +168,10 @@ def main():
     preds_df = make_preds_df(
         predictions=predictions,
         base_df=valid_df,
-        categories={k: v.categories for k, v in train_encoded_targets.items()},
+        target_labels=target_labels
     )
+
+    
     preds_df.to_csv(args.output_dir / "valid-patient-preds.csv")
 
 
@@ -208,11 +243,21 @@ def make_argument_parser() -> argparse.ArgumentParser:
         help="Path containing the slide features of the validation set as `h5` files. Can be specified multiple times",
     )
 
+    # parser.add_argument(
+    #     "--target-file",
+    #     metavar="PATH",
+    #     type=Path,
+    #     required=True,
+    # )
+
+    #TODO:
     parser.add_argument(
-        "--target-file",
-        metavar="PATH",
-        type=Path,
-        required=True,
+        "--regr-target",
+        nargs=1,
+        type=str,
+        default=[],
+        action="append",
+        help="Label to regress. Can be specified multiple times",
     )
 
     parser.add_argument(
