@@ -1,8 +1,8 @@
-# Barspoon: A Transformer Architecture for Multilabel Predictions
+# Barspoon: A Transformer Architecture for Multi-task Regression
 
-Barspoon transformers are a transformer architecture for multilabel prediction
-tasks for application in histopathological problems, but easily adaptable to
-other domains.  It closely follows the transformer architecture described in
+Barspoon transformers are a transformer architecture for multi-task regression
+prediction tasks for application in histopathological problems, but easily adaptable
+to other domains.  It closely follows the transformer architecture described in
 [Attention Is All You Need][1], slightly adapted to enable multi-label
 prediction for many labels without loss of accuracy, even for a large number of
 potentially noisy labels.  For more detailed information on the architecture,
@@ -16,7 +16,7 @@ refer to the [model's definition][2].
 To install barspoon, run
 
 ```sh
-pip install git+https://github.com/LocalToasty/barspoon-transformer
+pip install git+https://github.com/Avic3nna/barspoon-transformer-regr
 ```
 
 To properly leverage your GPU, you my need to manually install PyTorch as
@@ -41,24 +41,14 @@ We initially need the following:
  2. Features extracted from each slide, generated using e.g. [KatherLab's
     end-to-end feature extraction pipeline][4].
  3. A table matching each patient to their slides, the _slide table_.  The slide
-    table has two columns, `patient` and `filename`.  The `patient` column has
+    table has two columns, `PATIENT` and `FILENAME`.  The `PATIENT` column has
     to contain the same patient IDs found in the clini table.  The `filename`
-    column contains the file paths to features belonging to that patient.  Each
-    `filename` has to be unique, but one `patient` can be mapped to multiple
-    `filename`s.
+    column contains the file paths to features belonging to that patient, without .h5 extension.  Each
+    `FILENAME` has to be unique, but one `PATIENT` can be mapped to multiple
+    `FILENAME`s.
 
 [4]: https://github.com/KatherLab/end2end-WSI-preprocessing
     "End-to-End WSI Processing Pipeline"
-
-### Generating the Target File
-
-```sh
-barspoon-gen-target-file \
-    --clini-table path/to/clini.csv \
-    --category msi --category stage \
-    --quantize leucocyte-fraction 3 \
-    --output-file targets.toml
-```
 
 ### Training a Model
 
@@ -68,5 +58,8 @@ barspoon-train \
     --clini-table path/to/clini.csv \
     --slide-table path/to/slide.csv \
     --feature-dir dir/containing/features \
-    --target-file path/to/target.toml
+    --regr-target "Continuous target A" \
+    --regr-target "Continuous target B" \
+    --regr-target "Continuous target ..." \
+    --regr-target "Continuous target N"
 ```
