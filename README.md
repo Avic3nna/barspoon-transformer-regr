@@ -36,13 +36,13 @@ We initially need the following:
 
  1. A table containing clinical information, henceforth the _clini table_.  This
     table has to be in either csv or excel format.  It has to have at least one
-    column `patient`, which contains an ID identifying each patient, and other
+    column `PATIENT`, which contains an ID identifying each patient, and other
     columns matching clinical information to that patient.
  2. Features extracted from each slide, generated using e.g. [KatherLab's
     end-to-end feature extraction pipeline][4].
  3. A table matching each patient to their slides, the _slide table_.  The slide
     table has two columns, `PATIENT` and `FILENAME`.  The `PATIENT` column has
-    to contain the same patient IDs found in the clini table.  The `filename`
+    to contain the same patient IDs found in the clini table.  The `FILENAME`
     column contains the file paths to features belonging to that patient, without .h5 extension.  Each
     `FILENAME` has to be unique, but one `PATIENT` can be mapped to multiple
     `FILENAME`s.
