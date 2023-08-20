@@ -53,7 +53,7 @@ We initially need the following:
 ### Training a Model
 
 ```sh
-barspoon-train \
+python -m barspoon.train \
     --output-dir path/to/save/results/to \
     --clini-table path/to/clini.csv \
     --slide-table path/to/slide.csv \
