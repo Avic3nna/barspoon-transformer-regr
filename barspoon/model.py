@@ -96,12 +96,12 @@ class EncDecTransformer(nn.Module):
         d_features: int,
         target_n_outs: Dict[str, int],
         *,
-        d_model: int = 512,
-        num_encoder_heads: int = 8,
-        num_decoder_heads: int = 8,
+        d_model: int = 256,
+        num_encoder_heads: int = 5,
+        num_decoder_heads: int = 5,
         num_encoder_layers: int = 2,
         num_decoder_layers: int = 2,
-        dim_feedforward: int = 2048,
+        dim_feedforward: int = 768,
         positional_encoding: bool = True,
     ) -> None:
         super().__init__()
@@ -113,7 +113,7 @@ class EncDecTransformer(nn.Module):
             nhead=num_encoder_heads,
             dim_feedforward=dim_feedforward,
             batch_first=True,
-            norm_first=True,
+            # norm_first=True,
         )
         self.transformer_encoder = nn.TransformerEncoder(
             encoder_layer, num_layers=num_encoder_layers
@@ -134,7 +134,7 @@ class EncDecTransformer(nn.Module):
             nhead=num_decoder_heads,
             dim_feedforward=dim_feedforward,
             batch_first=True,
-            norm_first=True,
+            # norm_first=True,
         )
         self.transformer_decoder = nn.TransformerDecoder(
             decoder_layer, num_layers=num_decoder_layers
@@ -262,18 +262,29 @@ class LitMilClassificationMixin(pl.LightningModule):
         total_loss=0.0
         for target_label in self.target_labels:
             nan_idx = torch.isnan(targets[target_label])
+
+            # The Kullback-Leibler divergence loss
+            # kl_loss = nn.KLDivLoss(reduction="batchmean")
+            # input = F.log_softmax(logits[target_label][~nan_idx], dim=-1)
+            # target = F.softmax(targets[target_label][~nan_idx].type_as(input), dim=-1)
+            # loss = kl_loss(input, target)
             loss = F.mse_loss(
                 (l := logits[target_label][~nan_idx]),
                 targets[target_label][~nan_idx].type_as(l),
                 reduction='mean'  # You can change this to 'sum' if needed
             )
+            # loss = F.l1_loss(
+            #     (l := logits[target_label][~nan_idx]),
+            #     targets[target_label][~nan_idx].type_as(l)
+            # )
             total_loss += loss
+        total_loss = total_loss/len(self.target_labels)
 
 
         if step_name:
             self.log(
                 f"{step_name}_loss",
-                loss,
+                total_loss,
                 on_step=False,
                 on_epoch=True,
                 prog_bar=True,
@@ -299,7 +310,7 @@ class LitMilClassificationMixin(pl.LightningModule):
                     sync_dist=True,
                 )
 
-        return loss
+        return total_loss
 
     def training_step(self, batch, batch_idx):
         return self.step(batch, step_name="train")

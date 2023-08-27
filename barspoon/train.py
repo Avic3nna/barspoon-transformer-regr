@@ -66,6 +66,8 @@ def main():
             target_labels=target_labels,
         )
         dataset_df[target_labels] = dataset_df[target_labels].astype(float)
+        #only want 100% overlap to enable batch_size=1 (876 remain)
+        dataset_df = dataset_df.dropna()
         train_items, valid_items = train_test_split(dataset_df.index, test_size=0.2)
         train_df, valid_df = dataset_df.loc[train_items], dataset_df.loc[valid_items]
         min_max_scaler = sklearn.preprocessing.MinMaxScaler()
@@ -136,6 +138,8 @@ def main():
         **{k: v for k, v in vars(args).items() if k not in {"target_file"}},
     )
 
+    print(model)
+
     trainer = pl.Trainer(
         default_root_dir=args.output_dir,
         callbacks=[
@@ -154,8 +158,8 @@ def main():
         #  2. `barspoon.model.SafeMulticlassAUROC` breaks on multiple GPUs.
         accelerator=args.accelerator,
         devices=1,
-        accumulate_grad_batches=args.accumulate_grad_samples // args.batch_size,
-        gradient_clip_val=0.5,
+        # accumulate_grad_batches=args.accumulate_grad_samples // args.batch_size,
+        # gradient_clip_val=0.5,
         logger=CSVLogger(save_dir=args.output_dir),
     )
 
@@ -171,7 +175,8 @@ def main():
         target_labels=target_labels
     )
 
-    
+    #TODO: scale predictions back to original values
+
     preds_df.to_csv(args.output_dir / "valid-patient-preds.csv")
 
 

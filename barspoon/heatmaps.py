@@ -55,6 +55,7 @@ from packaging.specifiers import SpecifierSet
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 from tqdm import tqdm
+import itertools
 
 from barspoon.model import LitEncDecTransformer
 from barspoon.utils import make_dataset_df
@@ -103,7 +104,8 @@ def main():
             xs = np.sort(np.unique(coords[:, 0]))
             stride = np.min(xs[1:] - xs[:-1])
 
-        categories = model.hparams["categories"]
+        #TODO:
+        # categories = model.hparams["regr_target"]
 
         # Generate the gradcams
         # Skip the slide if we are out of memory
@@ -113,7 +115,7 @@ def main():
                 feats=feats,
                 coords=coords,
                 stride=stride,
-                categories=categories,
+                categories=target_labels, #TODO
                 batch_size=args.batch_size,
             )
         except torch.cuda.OutOfMemoryError as oom_error:  # type: ignore
@@ -124,6 +126,7 @@ def main():
         mask = vals_to_im(np.ones((len(coords), 1)), coords.numpy(), stride)[0]
         # The gradcam entry with the overall highest magnitude in the slide.
         # Used for scaling.
+
         slide_abs_max = abs(
             # We first have to re-flatten all the gradcam heatmaps
             # TODO maybe it's easier to just pass the gradcam images around in
@@ -131,8 +134,7 @@ def main():
             np.stack(
                 [
                     list(g)
-                    for categories in gradcams.values()
-                    for g in categories.values()
+                    for g in gradcams.values()
                 ]
             )
         ).max()
@@ -141,7 +143,7 @@ def main():
         (outdir := args.output_dir / h5_path.stem).mkdir(exist_ok=True, parents=True)
         for target_label, categories in gradcams.items():
             gradcam_im = plt.get_cmap("magma")(
-                abs(np.stack(categories.values())).mean(0) / slide_abs_max
+                abs(np.stack(categories)) / slide_abs_max
             )
             gradcam_im[:, :, -1] = mask
             Image.fromarray(
@@ -164,41 +166,40 @@ def main():
                     scale=f"{slide_abs_max}",
                 ),
             )
+            cat_gradcam = categories
 
-            for category, cat_gradcam in categories.items():
-                # for category, cat_gradcam in zip(cs, gradcams[left:right], strict=True):
-                # Both the class-indicating map and the alpha map contain
-                # information on the "importance" of a region, where the
-                # class-indicating map becomes more faint for low attention
-                # regions and the alpha becomes more transparent.  Since those
-                # two factors of faintness would otherwise multiplicatively
-                # compound we take the square root of both, counteracting the
-                # effect.
-                gradcam_im = plt.get_cmap("coolwarm")(
-                    np.sign(cat_gradcam)
-                    * np.sqrt(abs(cat_gradcam) / abs(cat_gradcam).max())
-                    / 2
-                    + 0.5
-                )
-                gradcam_im[:, :, -1] = np.sqrt(
-                    abs(cat_gradcam) / abs(cat_gradcam).max()
-                )
-                Image.fromarray(
-                    np.uint8(255 * gradcam_im),
-                    "RGBA",
-                ).resize(
-                    np.array(mask.shape)[::-1] * 8, resample=Image.Resampling.NEAREST
-                ).save(
-                    outdir / f"gradcam_{target_label}_{category}.png",
-                    pnginfo=make_metadata(
-                        version="barspoon-cat-gradcam 1.0",
-                        filename=h5_path.stem,
-                        stride=str(stride / 8),
-                        target_label=target_label,
-                        category=category,
-                        scale=f"{abs(cat_gradcam).max():e}",
-                    ),
-                )
+            # for category, cat_gradcam in zip(cs, gradcams[left:right], strict=True):
+            # Both the class-indicating map and the alpha map contain
+            # information on the "importance" of a region, where the
+            # class-indicating map becomes more faint for low attention
+            # regions and the alpha becomes more transparent.  Since those
+            # two factors of faintness would otherwise multiplicatively
+            # compound we take the square root of both, counteracting the
+            # effect.
+            gradcam_im = plt.get_cmap("coolwarm")(
+                np.sign(cat_gradcam)
+                * np.sqrt(abs(cat_gradcam) / abs(cat_gradcam).max())
+                / 2
+                + 0.5
+            )
+            gradcam_im[:, :, -1] = np.sqrt(
+                abs(cat_gradcam) / abs(cat_gradcam).max()
+            )
+            Image.fromarray(
+                np.uint8(255 * gradcam_im),
+                "RGBA",
+            ).resize(
+                np.array(mask.shape)[::-1] * 8, resample=Image.Resampling.NEAREST
+            ).save(
+                outdir / f"gradcam_{target_label}.png",
+                pnginfo=make_metadata(
+                    version="barspoon-cat-gradcam 1.0",
+                    filename=h5_path.stem,
+                    stride=str(stride / 8),
+                    target_label=target_label,
+                    scale=f"{abs(cat_gradcam).max():e}",
+                ),
+            )
 
 
 def compute_gradcams(
@@ -215,12 +216,14 @@ def compute_gradcams(
     Returns:
         An array of shape [n_dim, x, y]
     """
-    n_outputs = sum(len(c) for c in categories.values())
-    flattened_categories = [
-        (target, cat_idx, category)
-        for target, cs in categories.items()
-        for cat_idx, category in enumerate(cs)
-    ]
+    n_outputs = len(categories) #sum(len(c) for c in categories.values())
+    # flattened_categories = [
+    #     (target, cat_idx, category)
+    #     for target, cs in categories.items()
+    #     for cat_idx, category in enumerate(cs)
+    # ]
+
+    flattened_categories = categories
 
     # We need one gradcam per output class.  We thus replicate the feature
     # tensor `n_outputs` times so we can obtain a gradient map for each of them.
@@ -245,13 +248,21 @@ def compute_gradcams(
         # feature repetition.  If we now calculate `(d sum y_i)/dx`, the n-th
         # repetition of tile features' tensor's gradient will contain exactly
         # `dy_i/dx`.
+
+        # sum(
+        #     scores[target_label][i, cat_idx]
+        #     for i, (target_label, cat_idx, _) in enumerate(
+        #         flattened_categories[idx : idx + batch_size]
+        #     )
+        # ).backward()
+
         sum(
-            scores[target_label][i, cat_idx]
-            for i, (target_label, cat_idx, _) in enumerate(
-                flattened_categories[idx : idx + batch_size]
+            scores[target_label][i]
+            for i, target_label in enumerate(
+                flattened_categories
             )
         ).backward()
-
+        
         gradcam = (feats_t.grad * feats_t).sum(-1)
         gradcams.append(gradcam.detach().cpu())
 
@@ -265,10 +276,10 @@ def compute_gradcams(
     )
 
     unflattened_gradcams_2d = defaultdict(dict)
-    for (target_label, _, category), gradcam_2d in zip(
+    for target_label, gradcam_2d in zip(
         flattened_categories, gradcams_2d
     ):
-        unflattened_gradcams_2d[target_label][category] = gradcam_2d
+        unflattened_gradcams_2d[target_label] = gradcam_2d
     return unflattened_gradcams_2d
 
 
