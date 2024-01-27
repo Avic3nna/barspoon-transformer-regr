@@ -95,7 +95,7 @@ class BagDataset(Dataset):
         return (
             feats,
             coords,
-            {label: target[index] for label, target in self.targets.items()},
+            {label: target.iloc[index] for label, target in self.targets.items()},
         )
 
 
